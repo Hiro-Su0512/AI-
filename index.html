@@ -1,0 +1,322 @@
+
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Teachable Machine じゃんけん</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@teachablemachine/image@latest/dist/teachablemachine-image.min.js"></script>
+
+  <style>
+    body {
+      font-family: sans-serif;
+      background: #101827;
+      color: white;
+      text-align: center;
+      padding: 20px;
+    }
+
+    main {
+      max-width: 600px;
+      margin: auto;
+    }
+
+    section {
+      background: #1d293b;
+      padding: 20px;
+      margin: 16px 0;
+      border-radius: 16px;
+    }
+
+    button {
+      padding: 12px 22px;
+      margin: 8px;
+      border: none;
+      border-radius: 10px;
+      background: #70b8ff;
+      font-size: 16px;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #webcam-container canvas {
+      max-width: 100%;
+      border-radius: 12px;
+    }
+
+    .hands {
+      display: flex;
+      justify-content: space-around;
+      font-size: 55px;
+    }
+
+    #result {
+      font-size: 25px;
+      font-weight: bold;
+      color: #8cc8ff;
+    }
+
+    .prediction {
+      text-align: left;
+      margin: 10px auto;
+      max-width: 360px;
+    }
+
+    .bar {
+      height: 10px;
+      background: #40516a;
+      border-radius: 10px;
+      overflow: hidden;
+      margin-top: 4px;
+    }
+
+    .fill {
+      height: 100%;
+      width: 0%;
+      background: #70b8ff;
+      transition: width .1s;
+    }
+  </style>
+</head>
+
+<body>
+<main>
+  <h1>🤖 AIじゃんけん</h1>
+  <p>カメラに手を見せてコンピューターと対戦しよう！</p>
+
+  <section>
+    <h2>① AIカメラ</h2>
+    <button id="startButton" onclick="init()">Start</button>
+    <p id="status">Startを押してカメラを起動</p>
+    <div id="webcam-container"></div>
+    <div id="label-container"></div>
+  </section>
+
+  <section>
+    <h2>② じゃんけん</h2>
+    <div class="hands">
+      <div>
+        <div id="playerHand">❔</div>
+        <small>あなた</small>
+      </div>
+      <div>
+        <div id="cpuHand">❔</div>
+        <small>CPU</small>
+      </div>
+    </div>
+
+    <p id="recognized">認識した手：---</p>
+    <button id="playButton" onclick="playGame()" disabled>
+      この手で勝負！
+    </button>
+    <p id="result">カメラを起動してね</p>
+  </section>
+
+  <section>
+    <h2>③ スコア</h2>
+    <p>
+      勝ち：<span id="wins">0</span>　
+      負け：<span id="losses">0</span>　
+      引分：<span id="draws">0</span>
+    </p>
+    <button onclick="resetScore()">リセット</button>
+  </section>
+</main>
+
+<script>
+  // Teachable MachineのモデルURL
+  const URL =
+    "https://teachablemachine.withgoogle.com/models/AXTgoOx2G/";
+
+  let model;
+  let webcam;
+  let maxPredictions;
+  let running = false;
+  let busy = false;
+  let currentHand = null;
+
+  let wins = 0;
+  let losses = 0;
+  let draws = 0;
+
+  const $ = id => document.getElementById(id);
+
+  // クラス名を、じゃんけんの手に対応させる
+  // 実際のモデルのクラス名に合わせて必要なら変更する
+  function toHand(className) {
+    const name = className.trim().toLowerCase();
+
+    if (["gu", "グー", "ぐー", "rock"].includes(name))
+      return "rock";
+
+    if (["choki", "チョキ", "ちょき", "scissors"].includes(name))
+      return "scissors";
+
+    if (["pa", "パー", "ぱー", "paper"].includes(name))
+      return "paper";
+
+    return null;
+  }
+
+  const handInfo = {
+    rock: { name: "グー", emoji: "✊" },
+    scissors: { name: "チョキ", emoji: "✌️" },
+    paper: { name: "パー", emoji: "✋" }
+  };
+
+  async function init() {
+    if (running || busy) return;
+
+    busy = true;
+    $("startButton").disabled = true;
+    $("status").textContent = "モデルを読み込み中...";
+
+    try {
+      const newModel = await tmImage.load(
+        URL + "model.json",
+        URL + "metadata.json"
+      );
+
+      const count = newModel.getTotalClasses();
+
+      const newWebcam = new tmImage.Webcam(280, 280, true);
+      await newWebcam.setup();
+      await newWebcam.play();
+
+      model = newModel;
+      webcam = newWebcam;
+      maxPredictions = count;
+
+      $("webcam-container").replaceChildren(webcam.canvas);
+      $("label-container").replaceChildren();
+
+      for (let i = 0; i < maxPredictions; i++) {
+        const row = document.createElement("div");
+        row.className = "prediction";
+
+        const title = document.createElement("div");
+        const bar = document.createElement("div");
+        bar.className = "bar";
+
+        const fill = document.createElement("div");
+        fill.className = "fill";
+
+        bar.appendChild(fill);
+        row.append(title, bar);
+        $("label-container").appendChild(row);
+      }
+
+      running = true;
+      $("status").textContent = "認識中！";
+      $("playButton").disabled = false;
+
+      requestAnimationFrame(loop);
+
+    } catch (error) {
+      console.error(error);
+      $("status").textContent =
+        "起動エラー：" + error.message;
+      $("startButton").disabled = false;
+
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function loop() {
+    if (!running) return;
+
+    webcam.update();
+
+    try {
+      const predictions = await model.predict(webcam.canvas);
+
+      let best = predictions[0];
+
+      predictions.forEach((p, i) => {
+        if (p.probability > best.probability) best = p;
+
+        const row = $("label-container").children[i];
+        const percent = p.probability * 100;
+
+        row.children[0].textContent =
+          p.className + "：" + percent.toFixed(1) + "%";
+
+        row.children[1].children[0].style.width =
+          percent + "%";
+      });
+
+      const hand = toHand(best.className);
+
+      if (hand && best.probability >= 0.80) {
+        currentHand = hand;
+        $("recognized").textContent =
+          "認識した手：" + handInfo[hand].name +
+          "（" + (best.probability * 100).toFixed(1) + "%）";
+      } else {
+        currentHand = null;
+        $("recognized").textContent =
+          "手を認識できません。手をはっきり見せてね。";
+      }
+
+    } catch (error) {
+      console.error(error);
+      $("status").textContent = "認識エラー";
+    }
+
+    requestAnimationFrame(loop);
+  }
+
+  function playGame() {
+    if (!currentHand) {
+      $("result").textContent =
+        "グー・チョキ・パーのどれかを認識させてね！";
+      return;
+    }
+
+    const choices = ["rock", "scissors", "paper"];
+    const cpu = choices[Math.floor(Math.random() * 3)];
+    const player = currentHand;
+
+    $("playerHand").textContent = handInfo[player].emoji;
+    $("cpuHand").textContent = handInfo[cpu].emoji;
+
+    if (player === cpu) {
+      $("result").textContent = "引き分け！";
+      draws++;
+    } else if (
+      (player === "rock" && cpu === "scissors") ||
+      (player === "scissors" && cpu === "paper") ||
+      (player === "paper" && cpu === "rock")
+    ) {
+      $("result").textContent = "あなたの勝ち！🎉";
+      wins++;
+    } else {
+      $("result").textContent = "CPUの勝ち！";
+      losses++;
+    }
+
+    $("wins").textContent = wins;
+    $("losses").textContent = losses;
+    $("draws").textContent = draws;
+  }
+
+  function resetScore() {
+    wins = losses = draws = 0;
+    $("wins").textContent = "0";
+    $("losses").textContent = "0";
+    $("draws").textContent = "0";
+    $("playerHand").textContent = "❔";
+    $("cpuHand").textContent = "❔";
+    $("result").textContent = "もう一度勝負！";
+  }
+</script>
+</body>
+</html>
